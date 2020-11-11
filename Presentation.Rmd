@@ -39,7 +39,7 @@ Regarding Katz back-off, the discounts on the frequencies of observed n-grams we
 Results are displayed on the "Prediction" tab after clicking the "Submit" button. The **most likely** words are shown at the **top** and are colored **<span style="color:forestgreen">forest green</span>**, whereas the **less likely** words are shown at the **bottom** and are colored **<span style="color:darkblue">dark blue</span>**.
 
 Here is an example of word prediction after clicking "Submit" for "**I am a**" as input text, **5** as number of words to predict, and prediction using **Katz back-off**:
-![example](./example.png)
+![](./example.png)
 
 The app is currently stored on a webpage hosted by the shinyapps.io server: <https://johan-vm.shinyapps.io/WordPrediction/>.
 
