@@ -1,0 +1,413 @@
+---
+title: "Data Science Capstone: Milestone Report"
+author: "Johan Vásquez Mazo"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r load, echo = FALSE, results = "hide"}
+load("~/Data Science/10. Capstone Project/envir.RData")
+```
+
+## Overview
+
+Natural language processing (NLP) is a field of linguistics, computer science, and artificial intelligence concerned with the interaction between data science and human language, and is a booming discipline thanks to the huge improvements in the access to data and increases in computational power. In this report, the first tasks of the Data Science Capstone course project are carried out and presented, which are mostly focused on performing exploratory data analyses and setting the ground for the prediction algorithm to be created. The final goal of this project is to develop an R Shiny app based on a prediction algorithm for words when users are texting in English. The data for this project come from three sources, namely blogs, news and tweets.
+
+## Processing
+
+### Task 0: Understanding the Problem
+
+The data are first downloaded and unzipped into a directory by the following code:
+
+```{r downloadData, eval = FALSE}
+dataURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+if (!file.exists("final")) {
+    download.file(url = dataURL, destfile = "Coursera-SwiftKey.zip")
+    unzip(filename = "Coursera-SwiftKey.zip")
+}
+```
+
+The datasets that will be used throughout the whole project are only those in English (en_US). The foremost reason behind this decision is because the course is originally taught in English, and so it is safe to assume that everyone is familiar with the language. Moreover, given the simplicity of English grammar, some common NPL tasks are easier to perform or do not need to be performed at all[^1]; e.g., stemming in German is a lot harder for multiple reasons: conjugations are more complex, there are many composite words (zusammengesetzte Wörter) and separable verbs (trennbare Verben); and named entity recognition in German is difficult since all nouns are capitalized. That being said, a data frame containing the information of the three raw data files is created. These files are `en_US.blogs.txt`, `en_US.news.txt` and `en_US.twitter.txt`.
+
+```{r packages}
+library(dplyr)
+library(tidyr)
+library(stringi)
+library(quanteda)
+library(ggplot2)
+library(gridExtra)
+library(wordcloud)
+```
+
+```{r files, eval = FALSE}
+files <- dir("./final/en_US/")
+routes <- unname(sapply(files, function(x) {paste("./final/en_US/", as.character(x), sep = "")}))
+
+info <- file.info(routes) %>% select(size)
+row.names(info) <- files
+info$size_MB <- (info$size)/(1024^2) # JEDEC Standard 100B.01
+```
+
+The files are loaded into R by calling the function `readLines`. It is seen that lines `77259`, `766277`, `926143` and `948564` of the News data set contain some characters not supported by UTF-8, and therefore these not properly displayed characters are removed manually using Notepad++ or another text editor.
+
+```{r readLines, eval = FALSE}
+Blogs <- readLines(routes[1], encoding = "UTF-8", skipNul = TRUE)
+News <- readLines(routes[2], encoding = "UTF-8", skipNul = TRUE)
+Twitter <- readLines(routes[3], encoding = "UTF-8", skipNul = TRUE)
+```
+
+The package `stringi` has several functions to gather useful information about the files, i.e., the total number of words, characters and sentences. The mean number of words, characters and sentences in each file, and the mean number of characters per word and words per sentence are also calculated. These operations are done in the following lines of code:
+
+```{r info, eval = FALSE}
+filesList <- list(Blogs, News, Twitter)
+info$totalLines <- sapply(filesList, length)
+info$wordTotal <- sapply(filesList, function(x) {sum(stri_count_boundaries(x, type = "word"))})
+info$wordMean <- info$wordTotal/info$totalLines
+info$characterTotal <- sapply(filesList, function(x) {sum(stri_count_boundaries(x, type = "character"))})
+info$characterMean <- info$characterTotal/info$totalLines
+info$sentenceTotal <- sapply(filesList, function(x) {sum(stri_count_boundaries(x, type = "sentence"))})
+info$sentenceMean <- info$sentenceTotal/info$totalLines
+info$charactersPerWord <- info$characterMean/info$wordMean
+info$wordsPerSentence <- info$wordMean/info$sentenceMean
+```
+
+The data frame summarizing some preliminary information of the files is shown below:
+
+```{r showInfo}
+info
+```
+
+### Task 1: Getting and Cleaning the Data
+
+In order to clean the data, some packages that can be used are `tm`[^2], `Rweka` and `quanteda`, among others[^3]. `quanteda` seems to be the best option according to the information found on the internet. It was built for efficiency and speed: all of its functions are built for maximum performance and scale while still being as R-based as possible[^4]. It makes use of three efficient architectural elements: the `stringi` package for text processing, the `Matrix` package for sparse matrix objects, and the `data.table` package for indexing large documents efficiently. Additionally, since the final data product will be an R Shiny app, `data.table` is an effective and efficient mechanism to use with the text prediction algorithm. All things considered, the first step is converting the loaded text files to corpora, which is done by `quanteda::corpus()`.
+
+```{r corpora, eval = FALSE}
+Blogs <- corpus(Blogs)
+News <- corpus(News)
+Twitter <- corpus(Twitter)
+```
+
+Considering that profanity needs to be excluded from the corpora, a list of words banned by Google[^5] is downloaded from GitHub, which will be used later to discard the tokens matching those words.
+
+```{r profanityList}
+profanity <- readLines("https://raw.githubusercontent.com/RobertJGabriel/Google-profanity-words/master/list.txt")
+```
+
+The tokenizer function does not need to be created since there are functions that already perform that task, e.g., `quanteda::tokens()` constructs a tokens object and `quanteda::tokens_remove()` discards tokens from a tokens object.
+
+### Task 2: Exploratory Data Analysis
+
+Taking into account the large size of the datasets, performing an exploratory analysis on the original corpora would consume too many resources, which is not really necessary because plenty of the same information can be drawn from just a random sample of the data. Indeed, for a good confidence level and a good margin of error, the sample size does not need to be very large[^6], e.g., for a confidence level of 99% and a margin of error of 1%, only 16641 observations would be needed if the population size were infinite; however, in this case, a much larger sample is taken because the computational power allows it. Therefore, the initial datasets, i.e., the Blogs, News and Twitter corpora, are randomly sampled, yielding three corpora whose sizes are only one-tenth of those of the initial data.
+
+The sampling of the corpora is shown in the next code chunk, where the creation of tokenized versions of these datasets is also done, which allow for an easy exploratory analysis. The corpora tokenization involves the removal of punctuation, symbols, numbers and URLs.
+
+```{r sample, eval = FALSE}
+set.seed(1404)
+Blogs <- corpus_sample(Blogs, size = length(Blogs)/10)
+News <- corpus_sample(News, size = length(News)/10)
+Twitter <- corpus_sample(Twitter, size = length(Twitter)/10)
+
+Blogs <- tokens(Blogs, remove_punct = TRUE, remove_symbols = TRUE, remove_numbers = TRUE, 
+        remove_url = TRUE) %>% tokens_remove(profanity)
+News <- tokens(News, remove_punct = TRUE, remove_symbols = TRUE, remove_numbers = TRUE, 
+        remove_url = TRUE) %>% tokens_remove(profanity)
+Twitter <- tokens(Twitter, remove_punct = TRUE, remove_symbols = TRUE, remove_numbers = TRUE, 
+        remove_url = TRUE) %>% tokens_remove(profanity)
+```
+
+Three extra datasets, one for each source of data, are produced by removing English stopwords from the previous tokenized corpora in the following code:
+
+```{r removeStopwords, eval = FALSE}
+Blogs_nostop <- Blogs %>% tokens_remove(stopwords("en"))
+News_nostop <- News %>% tokens_remove(stopwords("en"))
+Twitter_nostop <- Twitter %>% tokens_remove(stopwords("en"))
+```
+
+The function `quanteda::dfm` is used to construct sparse document-feature matrices from the tokens objects, and then data frames with counts and document frequencies summaries of the features in the matrices are produced by calling the function `quanteda::textstat_frequency`. This procedure is shown in the code below:
+
+```{r wordFrequency, eval = FALSE}
+freqBlogs <- textstat_frequency(dfm(Blogs, tolower = TRUE), n = 30)
+freqNews <- textstat_frequency(dfm(News, tolower = TRUE), n = 30)
+freqTwitter <- textstat_frequency(dfm(Twitter, tolower = TRUE), n = 30)
+
+freqBlogs_nostop <- textstat_frequency(dfm(Blogs_nostop, tolower = TRUE), n = 30)
+freqNews_nostop <- textstat_frequency(dfm(News_nostop, tolower = TRUE), n = 30)
+freqTwitter_nostop <- textstat_frequency(dfm(Twitter_nostop, tolower = TRUE), n = 30)
+```
+
+The distributions of the 30 most frequent unigrams as word counts for every dataset sample, i.e., blogs, news and tweets with and without stopwords, are plotted by the following code:
+
+```{r unigramsPlot, fig.align = "center", fig.height = 15, fig.width = 10}
+gB <- ggplot(data = freqBlogs, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent words in the Blogs dataset sample (stopwords included)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 3677168 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+gBns <- ggplot(data = freqBlogs_nostop, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent words in the Blogs dataset sample (stopwords excluded)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 1876047 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+
+gN <- ggplot(data = freqNews, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent words in the News dataset sample (stopwords included)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 3344523 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+gNns <- ggplot(data = freqNews_nostop, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent words in the News dataset sample (stopwords excluded)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 1928754 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+
+gT <- ggplot(data = freqTwitter, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent words in the Twitter dataset sample (stopwords included)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 2948049 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+gTns <- ggplot(data = freqTwitter_nostop, aes(x = reorder(feature, frequency), y = frequency, fill = frequency)) + 
+    geom_col() + coord_flip() + theme_bw() + scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent words in the Twitter dataset sample (stopwords excluded)") + 
+    labs(x = "Word", y = "Frequency as word count (out of 1675754 words)") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 9), legend.position = "none")
+
+grid.arrange(gB, gBns, gN, gNns, gT, gTns, ncol = 2, nrow = 3)
+```
+
+The previous plots are also shown as word cloud plots instead. The following code chunks construct the word cloud plots for every dataset aforementioned, and these are shown thereafter:
+
+```{r dfms, eval = FALSE}
+fB <- textstat_frequency(dfm(Blogs, tolower = TRUE))
+fBns <- textstat_frequency(dfm(Blogs_nostop, tolower = TRUE))
+fN <- textstat_frequency(dfm(News, tolower = TRUE))
+fNns <- textstat_frequency(dfm(News_nostop, tolower = TRUE))
+fT <- textstat_frequency(dfm(Twitter, tolower = TRUE))
+fTns <- textstat_frequency(dfm(Twitter_nostop, tolower = TRUE))
+```
+
+```{r wordcloudPlot, fig.align = "center", fig.show = "hold", fig.height = 6, fig.width = 10}
+fB <- fB[1:500, ]
+fBns <- fBns[1:500, ]
+fN <- fB[1:500, ]
+fNns <- fBns[1:500, ]
+fT <- fB[1:500, ]
+fTns <- fBns[1:500, ]
+
+par(mfrow = c(1, 2), mar = c(0, 0, 0, 0))
+wordcloud(words = fB$feature, freq = fB$frequency, scale = c(5, 1), max.words = 100, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+wordcloud(words = fBns$feature, freq = fBns$frequency, scale = c(4, 1), max.words = 30, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+title(main = "Most common words in blogs", line = -4, outer = TRUE)
+
+par(mfrow = c(1, 2), mar = c(0, 0, 0, 0))
+wordcloud(words = fN$feature, freq = fN$frequency, scale = c(5, 1), max.words = 100, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+wordcloud(words = fNns$feature, freq = fNns$frequency, scale = c(4, 1), max.words = 30, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+title(main = "Most common words in news", line = -4, outer = TRUE)
+
+par(mfrow = c(1, 2), mar = c(0, 0, 0, 0))
+wordcloud(words = fT$feature, freq = fT$frequency, scale = c(5, 1), max.words = 100, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+wordcloud(words = fTns$feature, freq = fTns$frequency, scale = c(4, 1), max.words = 30, 
+    colors = c("#2692bd", "#0e8a77", "#eba00c", "#eb470c"), random.order = FALSE)
+title(main = "Most common words in tweets", line = -4, outer = TRUE)
+```
+
+A similar procedure as the one described earlier is done to summarize the information of bigrams and trigrams from the corpora. This procedure for the bigrams is performed in the following code chunk:
+
+```{r 2-grams, eval = FALSE}
+n2gramsBlogs <- Blogs %>% tokens_ngrams(n = 2L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+n2gramsNews <- News %>% tokens_ngrams(n = 2L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+n2gramsTwitter <- Twitter %>% tokens_ngrams(n = 2L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+
+n2gramsBlogs_nostop <- Blogs_nostop %>% tokens_ngrams(n = 2L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+n2gramsNews_nostop <- News_nostop %>% tokens_ngrams(n = 2L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+n2gramsTwitter_nostop <- Twitter_nostop %>% tokens_ngrams(n = 2L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+```
+
+The distributions of the 30 most frequent bigrams (as counts) for every dataset sample, i.e., blogs, news and tweets with and without stopwords, are plotted below:
+
+```{r bigramsPlot, fig.align = "center", fig.height = 15, fig.width = 10}
+gB2 <- ggplot(data = n2gramsBlogs, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 2-grams in the Blogs data sample") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gBns2 <- ggplot(data = n2gramsBlogs_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 2-grams in the Blogs data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+gN2 <- ggplot(data = n2gramsNews, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 2-grams in the News data sample") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gNns2 <- ggplot(data = n2gramsNews_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 2-grams in the News data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+gT2 <- ggplot(data = n2gramsTwitter, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 2-grams in the Twitter data sample") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gTns2 <- ggplot(data = n2gramsTwitter_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 2-grams in the Twitter data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as bigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+grid.arrange(gB2, gBns2, gN2, gNns2, gT2, gTns2, ncol = 2, nrow = 3)
+```
+
+In the same way, the code chunk below shows the procedure for the trigrams:
+
+```{r 3-grams, eval = FALSE}
+n3gramsBlogs <- Blogs %>% tokens_ngrams(n = 3L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+n3gramsNews <- News %>% tokens_ngrams(n = 3L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+n3gramsTwitter <- Twitter %>% tokens_ngrams(n = 3L, concatenator = " ") %>% dfm(tolower = TRUE) %>% 
+    textstat_frequency(n = 30)
+
+n3gramsBlogs_nostop <- Blogs_nostop %>% tokens_ngrams(n = 3L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+n3gramsNews_nostop <- News_nostop %>% tokens_ngrams(n = 3L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+n3gramsTwitter_nostop <- Twitter_nostop %>% tokens_ngrams(n = 3L, concatenator = " ") %>% 
+    dfm(tolower = TRUE) %>% textstat_frequency(n = 30)
+```
+
+The distributions of the 30 most frequent trigrams (as counts) for every dataset sample, i.e., blogs, news and tweets with and without stopwords, are plotted below:
+
+```{r trigramsPlot, fig.align = "center", fig.height = 15, fig.width = 10}
+gB3 <- ggplot(data = n3gramsBlogs, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 3-grams in the Blogs data sample") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gBns3 <- ggplot(data = n3gramsBlogs_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 3-grams in the Blogs data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+gN3 <- ggplot(data = n3gramsNews, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 3-grams in the News data sample") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gNns3 <- ggplot(data = n3gramsNews_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 3-grams in the News data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+gT3 <- ggplot(data = n3gramsTwitter, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "mediumseagreen", high = "steelblue4") + 
+    labs(title = "Most frequent 3-grams in the Twitter data sample") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+gTns3 <- ggplot(data = n3gramsTwitter_nostop, aes(x = reorder(feature, frequency), y = frequency, 
+        fill = frequency)) + geom_col() + coord_flip() + theme_bw() + 
+    scale_fill_gradient(low = "gold1", high = "orangered2") + 
+    labs(title = "Most frequent 3-grams in the Twitter data sample (no stopwords)") + 
+    labs(x = "Word", y = "Frequency as trigram count") + 
+    theme(plot.title = element_text(hjust = 0.5, size = 8.5), legend.position = "none")
+
+grid.arrange(gB3, gBns3, gN3, gNns3, gT3, gTns3, ncol = 2, nrow = 3)
+```
+
+To calculate how many unique words are needed to cover a certain percentage of all word instances, a function is created. First, the three corpora are merged into one so as to guarantee that the results are not as context-dependent as they would be if only one corpus were to be used. Second, the function `quanteda::textstat_frequency` is again used to obtain a data frame summarizing the frequencies of all words seen in the corpus. Then, a function called `uniqueWords` is created, which takes the desired coverage of all word instances expressed as a percentage and returns the number of words in the dictionary needed for that coverage. It can be seen that only 142 words are needed in order to cover 50% of all word instances, whereas 8220 words are needed to cover 90% of all word instances; i.e., this function grows exponentially. The code of this procedure and said results are shown below:
+
+```{r bigCorpus, eval = FALSE}
+rm(list = setdiff(ls(), c("Blogs", "News", "Twitter")))
+names(Blogs) <- 1:length(Blogs)
+names(News) <- (1+length(Blogs)):(length(News)+length(Blogs))
+names(Twitter) <- (1+length(Blogs)+length(News)):(length(Twitter)+length(Blogs)+length(News))
+
+bigCorpus <- c(Blogs, News, Twitter)
+rm(list = setdiff(ls(), "bigCorpus"))
+
+freqs <- textstat_frequency(dfm(bigCorpus, tolower = TRUE))
+totalCount <- sum(freqs$frequency)
+```
+
+```{r coverage}
+uniqueWords <- function(coverage) {
+    i <- 1
+    temp <- freqs[i, ]
+    Frequency <- sum(temp$frequency)/totalCount
+    while (Frequency < coverage) {
+        temp[i, ] <- freqs[i, ]
+        Frequency <- sum(temp$frequency)/totalCount
+        i = i+1
+    }
+    length(temp$rank)
+}
+
+uniqueWords(0.5)
+
+uniqueWords(0.9)
+```
+
+To evaluate how many of the words come from foreign languages, a reasonable procedure would be searching every unique unigram in an English dictionary, like Oxford's, Merriam-Webster's or Cambridge's, then discarding the unigrams that can be found in the dictionary, and lastly checking whether the remaining unigrams are foreign words or not. However, there are several drawbacks to this approach, for instance, some foreign words are indexed over time in the dictionary (especially from French and Latin), some of them are interlingual homographs or lexical cognates, and slang may be misidentified. To avoid these issues, some scrutiny must be performed on the kept unigrams. Also, orthography comes in handy because if foreign symbols appear, like diacritics or ideograms, then they will most likely be from foreign words.
+
+To increase the coverage, i.e., using a smaller number of words to cover the same number of phrases, a sensible approach would be replacing the least frequent words by their most frequent synonyms, which can be done by searching uncommon words from the corpora in a thesaurus, retrieving a list of synonyms for each word, and then mapping that word to an usual synonym.
+
+### Task 3: Modeling
+
+A preliminary strategy for building a basic n-gram model is making use of maximum likelihood estimation (MLE). Thus, the n-gram probability may be estimated by dividing the observed frequency of a particular sequence by the observed frequency of a prefix, and such ratio is called a relative frequency. This approach also encodes some facts of different nature, some may be strictly syntactic, some may be contextual or cultural, and some other may depend on the style in which the sentences are written. Some extra context for the contexts to the left of the sentence beginning and right of the sentence end needs to be assumed; otherwise, the sentence probabilities for all sentences of a given length would sum to one, and this model would define an infinite set of probability distributions, with one distribution per sentence length. Also, the language model probabilities will be represented and computed in log format as log probabilities, because multiplying enough n-grams together would result in numerical underflow, and the numbers that are obtained are not as small by using log probabilities instead of raw probabilities[^7].
+
+Back off models can be used to predict n-grams that are not seen in the training set. For a back off model to give a correct probability distribution, a discount to the higher-order n-grams must be done to save some probability mass for the lower
+order n-grams. In addition to this explicit discount factor, a function to distribute this probability mass to the lower order n-grams is needed. This kind of back off with discounting is also called Katz back off[^8]. In Katz back off, a discounted probability P is relied upon if the n-gram has been seen before (i.e., if it has non-zero counts). Otherwise, recursive backing off to the Katz probability for the shorter-history (N-1)-gram must be done. Also, when trying to compute the probability of a word given a trigram and there are no examples of that particular trigram, its probability may be estimated by using the bigram probability. Similarly, if there are no counts for that particular bigram, its probability may be estimated by using the unigram probability. In other words, sometimes using less context is a good thing, helping to generalize more for contexts that the model has not learned much about. Backing off to a lower-order n-gram is only done if there is zero evidence for a higher-order n-gram.
+
+It must be noted that the maximum number of parameters for the n-gram language model will be three, i.e., the built model will only take unigrams, bigrams or trigrams for predicting, because of the long time it takes to construct an n-gram tokens object when n is greater than 3. Also, rather than storing each word as a string, it is generally represented in memory as a 64-bit hash number, with the words themselves stored on disk. Probabilities are generally quantized using only 4 to 8 bits (instead of 8-byte floats), and n-grams are stored in reverse tries. N-grams can also be shrunk by pruning, for example only storing n-grams with counts greater than some threshold or using entropy to prune less-important n-grams.
+
+The best way to evaluate the performance of the language model is embedding it in an application and measure how much the application improves. This end-to-end evaluation is called extrinsic evaluation, but it is often very expensive, so an intrinsic evaluation metric is better because it measures the quality of the model independent of any application. This involves the classic training-test sets of the statistical models. Therefore, the probabilities of an n-gram model come from the corpus it is trained on, the training set or training corpus; and the quality of the n-gram model can be measured by its performance on some unseen data called the test set or test corpus. The more accurate the predictions are on the test set, the better the model is; and the metric for evaluating language models is called perplexity. The perplexity of a language model on a test set is the inverse probability of the test set, normalized by the number of words.
+
+One thing to keep in mind is using a training corpus that has a similar genre to whatever task is to be accomplished. It is equally important to get training data in the appropriate dialect, especially when processing social media posts or spoken transcripts. Also, matching genres and dialects is still not sufficient, because the models may still be subject to the problem of sparsity. Additionally, the problem of illegitimate zero probability n-grams needs to be solved. So, to deal with unknown words, or out-of-vocabulary (OOV) words, a pseudo-word called `<UNK>` is added to the model and thus the strategy consists of: choosing a vocabulary that is fixed in advance; converting in the training set any word that is not in the vocabulary to the unknown word token `<UNK>` in a text normalization step; and estimating the probabilities for `<UNK>` from its counts just like any other regular word in the training set. Finally, to keep the language model from assigning zero probability to unseen events, model smoothing or discounting must be performed, and this can be done by several ways: add-1 smoothing, add-k smoothing, stupid backoff, and Kneser-Ney smoothing.
+
+<!-- References -->
+
+[^1]: Natural language processing. https://en.wikipedia.org/wiki/Natural_language_processing.
+
+[^2]: Feinerer, I., Hornik, K., & Meyer, D. (2008). Text Mining Infrastructure in R. Journal of Statistical Software, 25(5), 1 - 54. http://dx.doi.org/10.18637/jss.v025.i05.
+
+[^3]: CRAN Task View: Natural Language Processing. https://cran.r-project.org/web/views/NaturalLanguageProcessing.html.
+
+[^4]: Benoit, Kenneth, Kohei Watanabe, Haiyan Wang, Paul Nulty, Adam Obeng, Stefan Müller, and Akitaka Matsuo. (2018). “quanteda: An R package for the quantitative analysis of textual data”. Journal of Open Source Software. 3(30), 774. https://doi.org/10.21105/joss.00774.
+
+[^5]: Robert J. Gabriel. Full List of Bad Words and Top Swear Words Banned by Google. https://github.com/RobertJGabriel/Google-profanity-words.
+
+[^6]: Sample size determination. https://en.wikipedia.org/wiki/Sample_size_determination.
+
+[^7]: Jurafsky, Daniel & Martin, James. (2008). Speech and Language Processing: An Introduction to Natural Language Processing, Computational Linguistics, and Speech Recognition.
+
+[^8]: Katz, S. M. (1987). Estimation of probabilities from sparse data for the language model component of a speech recognizer. IEEE Transactions on Acoustics, Speech, and Signal Processing, 35(3), 400–401.
